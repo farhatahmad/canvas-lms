@@ -63,6 +63,12 @@ class BigBlueButtonConference < WebConference
     conference_key
   end
 
+  def recording_ready!
+    super  
+    # Clear cache so it recording cache is repopulated with new recordings  
+    Rails.cache.delete(["conference_recordings", conference_key].cache_key)
+  end
+
   def recording_ready_user
     if self.grants_right?(self.user, :create)
       "#{self.user['name']} <#{self.user.email}>"
@@ -120,6 +126,10 @@ class BigBlueButtonConference < WebConference
   def delete_recording(recording_id)
     return { deleted: false } if recording_id.nil?
     response = send_request(:deleteRecordings, recordID: recording_id)
+
+    # Clear cache so it recording cache is repopulated with new recordings
+    Rails.cache.delete(["conference_recordings", conference_key].cache_key)
+
     { deleted: response.present? && response[:deleted].casecmp('true') == 0 }
   end
 
@@ -168,12 +178,19 @@ class BigBlueButtonConference < WebConference
 
   def fetch_recordings
     return [] unless conference_key && settings[:record]
-    response = send_request(:getRecordings, {
-      :meetingID => conference_key,
+
+    Rails.cache.fetch(["conference_recordings", conference_key].cache_key) do
+      response = send_request(:getRecordings, {
+        :meetingID => conference_key,
       })
-    result = response[:recordings] if response
-    result = [] if result.is_a?(String)
-    Array(result)
+      result = response[:recordings] if response
+      result = [] if result.is_a?(String)
+
+      # Can't cache protected recordings since it includes a 1 time use token
+      return Array(result) if protected_recording?(result)
+
+      Array(result)
+    end
   end
 
   def generate_request(action, options)
@@ -243,5 +260,12 @@ class BigBlueButtonConference < WebConference
     recording_formats.each do |recording_format|
       return recording_format[:length].to_i if recording_format[:length].present?
     end
+  end
+
+  def protected_recording?(recording)
+    # Check the url of the first format of the first recording that's returned
+    recording.first.fetch(:playback).first.fetch(:url).include?("resourceToken=")
+  rescue
+    false
   end
 end
